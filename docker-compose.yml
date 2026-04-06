@@ -1,0 +1,96 @@
+version: "3.9"
+
+services:
+  # ── Rust log service ──────────────────────────────────────────────────────
+  logforge:
+    build:
+      context: ./rust-service
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"   # REST API
+      - "9090:9090"   # Prometheus metrics
+    environment:
+      RUST_LOG: info
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
+    depends_on:
+      - tempo
+      - loki
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Next.js UI ────────────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ./nextjs-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      LOGFORGE_API_URL: http://logforge:3001
+    depends_on:
+      - logforge
+    restart: unless-stopped
+
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    restart: unless-stopped
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3003:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED:    "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE:   Admin
+      GF_AUTH_DISABLE_LOGIN_FORM:   "true"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    restart: unless-stopped
+
+  # ── Loki (log storage) ─────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.8
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./config/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  # ── Tempo (trace storage) ─────────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.4.2
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "3200:3200"   # Tempo HTTP API
+    volumes:
+      - ./config/tempo.yml:/etc/tempo.yaml:ro
+      - tempo_data:/tmp/tempo
+    command: -config.file=/etc/tempo.yaml
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  tempo_data:
